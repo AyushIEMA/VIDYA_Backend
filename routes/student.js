@@ -25,6 +25,7 @@ router.get('/profile', async (req, res) => {
     const student = await Student.findOne({ userId: req.user._id });
     res.json(student);
   } catch (error) {
+    console.error('[student/attendance] unexpected', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -252,6 +253,24 @@ router.post('/attendance', async (req, res) => {
 
     if (!batch) return res.status(404).json({ error: 'Batch not found' });
 
+    // Input validation (400 only for invalid input).
+    const lat = location?.lat;
+    const lng = location?.lng;
+    if (!batchId) {
+      return res.status(400).json({ error: 'batchId is required' });
+    }
+    if (lat === undefined || lng === undefined) {
+      return res.status(400).json({ error: 'location.lat and location.lng are required' });
+    }
+    const latNum = Number(lat);
+    const lngNum = Number(lng);
+    if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) {
+      return res.status(400).json({ error: 'location.lat and location.lng must be valid numbers' });
+    }
+    if (latNum < -90 || latNum > 90 || lngNum < -180 || lngNum > 180) {
+      return res.status(400).json({ error: 'location.lat/lng are out of range' });
+    }
+
     const now = new Date();
     const todayName = now.toLocaleString('en-US', { weekday: 'long' });
 
@@ -269,19 +288,23 @@ router.post('/attendance', async (req, res) => {
     };
 
     const timeObj = slot ? parseTime(slot.startTime) : null;
-    const windowOk = (() => {
-      if (!withinWeekday) return false;
-      if (!timeObj) return false;
-      const start = new Date(now);
-      start.setHours(timeObj.h, timeObj.m, 0, 0);
-      const end = new Date(start);
-      end.setMinutes(end.getMinutes() + 30);
-      return now >= start && now <= end;
+    const start = (() => {
+      if (!withinWeekday) return null;
+      if (!timeObj) return null;
+      const d = new Date(now);
+      d.setHours(timeObj.h, timeObj.m, 0, 0);
+      return d;
+    })();
+    const end = (() => {
+      if (!start) return null;
+      const d = new Date(start);
+      d.setMinutes(d.getMinutes() + 30);
+      return d;
     })();
 
     const within = isWithinRadius(
-      location.lat,
-      location.lng,
+      latNum,
+      lngNum,
       batch.location.lat,
       batch.location.lng
     );
@@ -295,28 +318,26 @@ router.post('/attendance', async (req, res) => {
       date: { $gte: today }
     });
 
-    if (existing) return res.status(400).json({ error: 'Attendance already marked today' });
+    if (existing) return res.status(409).json({ error: 'Attendance already marked today' });
 
-    // Enforce rules. If any rule fails, block marking and auto-mark ABSENT.
-    if (!within || !withinWeekday || !windowOk) {
-      const reasons = [];
-      if (!within) reasons.push('You are not within 500m of the class location');
-      if (!withinWeekday) reasons.push('Today is not a scheduled class day for this batch');
-      if (withinWeekday && !windowOk) reasons.push('Outside attendance time window (start time + 30 minutes)');
-
-      const absent = await Attendance.create({
-        studentId: student._id,
-        batchId,
-        date: new Date(),
-        status: 'absent',
-        location
-      });
-
-      return res.status(400).json({
-        error: reasons.join('. '),
-        autoMarked: 'absent',
-        attendance: absent
-      });
+    // Enforce rules (do not auto-create attendance on failure).
+    if (!within) {
+      return res.status(403).json({ error: 'Too far from batch location' });
+    }
+    if (!withinWeekday) {
+      return res.status(422).json({ error: 'Today is not a scheduled class day for this batch' });
+    }
+    if (!start || !end) {
+      return res.status(422).json({ error: 'Batch start time is not configured for today' });
+    }
+    if (now > end) {
+      const startTime = slot?.startTime || batch.startTime || '';
+      return res.status(422).json({ error: `You are late. Class started at ${startTime}. Contact teacher.` });
+    }
+    // Preserve existing behavior: don't allow before class start.
+    if (now < start) {
+      const startTime = slot?.startTime || batch.startTime || '';
+      return res.status(422).json({ error: `Attendance opens at ${startTime}.` });
     }
 
     const attendance = await Attendance.create({
@@ -324,7 +345,7 @@ router.post('/attendance', async (req, res) => {
       batchId,
       date: new Date(),
       status: 'present',
-      location
+      location: { lat: latNum, lng: lngNum }
     });
 
     res.status(201).json(attendance);

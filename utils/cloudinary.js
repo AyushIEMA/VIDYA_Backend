@@ -171,5 +171,36 @@ export async function uploadToCloudinary(buffer, folder, meta = {}) {
   });
 }
 
+export function getCloudinaryAssetUrl(result) {
+  const url = (result?.secure_url || result?.url || '').toString().trim();
+  if (!url) return null;
+  // Prefer https delivery always.
+  if (url.startsWith('http://')) return `https://${url.slice('http://'.length)}`;
+  return url;
+}
+
+/**
+ * Best-effort verification that the uploaded asset is reachable.
+ * Uses HEAD first; falls back to GET when HEAD is not allowed.
+ */
+export async function verifyCloudinaryUrl(url, { timeoutMs = 6000 } = {}) {
+  const u = (url || '').toString().trim();
+  if (!u) return { ok: false, status: 0, methodTried: 'none' };
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const head = await fetch(u, { method: 'HEAD', redirect: 'follow', signal: controller.signal });
+    if (head.ok) return { ok: true, status: head.status, methodTried: 'HEAD' };
+    // Some CDNs respond 403 to HEAD but allow GET; try GET in that case.
+    const get = await fetch(u, { method: 'GET', redirect: 'follow', signal: controller.signal });
+    return { ok: get.ok, status: get.status, methodTried: 'GET' };
+  } catch (err) {
+    return { ok: false, status: 0, methodTried: 'error', error: err?.name || err?.message || String(err) };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 export { cloudinary };
 export default cloudinary;

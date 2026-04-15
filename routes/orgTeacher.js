@@ -6,7 +6,7 @@ import ClassLog from '../models/ClassLog.js';
 import OrgTeacherAssignment from '../models/OrgTeacherAssignment.js';
 import Announcement from '../models/Announcement.js';
 import OrgTeacherProfile from '../models/OrgTeacherProfile.js';
-import { uploadSingleFile, uploadToCloudinary } from '../utils/cloudinary.js';
+import { uploadSingleFile, uploadToCloudinary, getCloudinaryAssetUrl, verifyCloudinaryUrl } from '../utils/cloudinary.js';
 import { sendWhatsAppMessage } from '../utils/whatsapp.js';
 
 const router = express.Router();
@@ -99,7 +99,18 @@ router.post('/batch/:id/upload', uploadSingleFile('file'), async (req, res) => {
       originalname: req.file.originalname
     });
 
-    const fileData = { url: result.secure_url, name: req.file.originalname, uploadedAt: new Date() };
+    const url = getCloudinaryAssetUrl(result);
+    if (!url) {
+      console.error('[orgTeacher/upload] Cloudinary missing URL', { public_id: result?.public_id });
+      return res.status(502).json({ error: 'Upload succeeded but storage did not return a usable URL. Please retry.' });
+    }
+    const check = await verifyCloudinaryUrl(url);
+    if (!check.ok) {
+      console.error('[orgTeacher/upload] URL verification failed', { url, check });
+      return res.status(502).json({ error: 'Upload succeeded but file URL is not accessible yet. Please retry in a few seconds.' });
+    }
+
+    const fileData = { url, name: req.file.originalname, uploadedAt: new Date() };
     if (type === 'notes') batch.notes.push(fileData);
     if (type === 'syllabus') batch.syllabus.push(fileData);
 

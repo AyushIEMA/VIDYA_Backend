@@ -8,7 +8,7 @@ import Attendance from '../models/Attendance.js';
 import Announcement from '../models/Announcement.js';
 import ClassLog from '../models/ClassLog.js';
 import Student from '../models/Student.js';
-import { uploadSingleFile, uploadToCloudinary } from '../utils/cloudinary.js';
+import { uploadSingleFile, uploadToCloudinary, getCloudinaryAssetUrl, verifyCloudinaryUrl } from '../utils/cloudinary.js';
 import { sendWhatsAppMessage } from '../utils/whatsapp.js';
 
 const router = express.Router();
@@ -264,7 +264,18 @@ router.post('/batch/:id/upload', uploadSingleFile('file'), async (req, res) => {
       return res.status(502).json({ error: `File storage error: ${msg}` });
     }
 
-    const fileData = { url: result.secure_url, name: req.file.originalname, uploadedAt: new Date() };
+    const url = getCloudinaryAssetUrl(result);
+    if (!url) {
+      console.error('[upload] Cloudinary missing URL', { public_id: result?.public_id });
+      return res.status(502).json({ error: 'Upload succeeded but storage did not return a usable URL. Please retry.' });
+    }
+    const check = await verifyCloudinaryUrl(url);
+    if (!check.ok) {
+      console.error('[upload] URL verification failed', { url, check });
+      return res.status(502).json({ error: 'Upload succeeded but file URL is not accessible yet. Please retry in a few seconds.' });
+    }
+
+    const fileData = { url, name: req.file.originalname, uploadedAt: new Date() };
 
     if (type === 'notes') batch.notes.push(fileData);
     else if (type === 'syllabus') batch.syllabus.push(fileData);
